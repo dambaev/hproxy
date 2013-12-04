@@ -114,23 +114,30 @@ debug = True
 
 main = withSocketsDo $! withElementary $! runHEPGlobal $! 
         procForker forkOS $!
-        procWithBracket mainInit procFinished $! H.proc $! do
-    msg <- receive
-    case fromMessage msg of
-        Nothing -> procRunning
-        Just GuiExit -> procFinished
-        Just (GuiLogin login parent ) -> do
-            Just ls <- localState 
-            when debug $! liftIO $! C8.putStrLn $! login
-            
-            ret <- proxyLogin (unpack login) (fromJust $! optionServer ls) (fromJust $! optionDestination ls)
-            case ret of
-                Left !message -> do
-                    showMessage message
-                    procRunning
-                Right port -> do
-                    liftIO $! evas_object_smart_callback_call parent (fromString "delete,request") nullPtr
-                    procFinished
+        procWithBracket mainInit mainShutdown $! H.proc $! do
+    liftIO $! ecore_main_loop_iterate
+    mmsg <- receiveAfter 50
+    case mmsg of
+        Nothing-> procRunning
+        Just msg -> case fromMessage msg of
+            Nothing -> procRunning
+            Just GuiExit -> procFinished
+            Just (GuiLogin login parent ) -> do
+                Just ls <- localState 
+                when debug $! liftIO $! C8.putStrLn $! login
+                
+                ret <- proxyLogin (unpack login) (fromJust $! optionServer ls) (fromJust $! optionDestination ls)
+                case ret of
+                    Left !message -> do
+                        showMessage message parent
+                        procRunning
+                    Right port -> do
+                        liftIO $! evas_object_smart_callback_call parent (fromString "delete,request") nullPtr
+                        procFinished
+
+mainShutdown = do
+    liftIO elm_exit
+    procFinished
 
 generateOptions:: [MainFlag]-> MainOptions-> MainOptions
 generateOptions [] !tmp = tmp
@@ -189,7 +196,29 @@ reactOnOptions opts | P.length (optionClient opts) > 0
 reactOnOptions opts = do
     setLocalState $! Just $! opts
     mybox <- selfMBox
-    worker <- spawn $! proc $! guiProc mybox
+    liftIO $! do
+        elm_win_util_standard_add (fromString "mainwnd") (fromString "hproxy") >>= \parent-> do
+            elm_win_focus_highlight_enabled_set parent True
+
+            -- on close
+            evas_object_smart_callback_add parent (fromString "delete,request") (on_done mybox ) nullPtr
+            evas_object_smart_callback_add parent (fromString "hproxy_done") (on_done mybox ) nullPtr
+            -- set size
+            --evas_object_size_hint_min_set parent 640 480
+            evas_object_resize parent 300 80
+            -- box
+            box <- elm_box_add parent
+            evas_object_size_hint_weight_set box c'EVAS_HINT_EXPAND c'EVAS_HINT_EXPAND
+            -- resize box to parent
+            elm_win_resize_object_add parent box
+            evas_object_show box
+            
+            (loginBox, login) <- addLogin parent mybox
+            elm_box_pack_end box loginBox
+            buttonsBox <- addButtons parent mybox login
+            elm_box_pack_end box buttonsBox
+
+            evas_object_show parent
     procRunning
 
 mainInit = do
@@ -201,34 +230,6 @@ mainInit = do
 
 
 
-guiProc outbox = do
-    liftIO $! do
-        elm_win_util_standard_add (fromString "mainwnd") (fromString "hproxy") >>= \parent-> do
-            elm_win_focus_highlight_enabled_set parent True
-
-            -- on close
-            evas_object_smart_callback_add parent (fromString "delete,request") (on_done outbox ) nullPtr
-            evas_object_smart_callback_add parent (fromString "hproxy_done") (on_done outbox ) nullPtr
-            -- set size
-            --evas_object_size_hint_min_set parent 640 480
-            evas_object_resize parent 300 80
-            -- box
-            box <- elm_box_add parent
-            evas_object_size_hint_weight_set box c'EVAS_HINT_EXPAND c'EVAS_HINT_EXPAND
-            -- resize box to parent
-            elm_win_resize_object_add parent box
-            evas_object_show box
-            
-            (loginBox, login) <- addLogin parent outbox
-            elm_box_pack_end box loginBox
-            buttonsBox <- addButtons parent outbox login
-            elm_box_pack_end box buttonsBox
-
-            evas_object_show parent
-        
-        elm_run
-        return ()
-    procFinished
 
 nullCallback:: EvasObjectSmartCallback
 nullCallback _ _ _ = return ()
@@ -279,11 +280,13 @@ addLogin parent outbox = elm_box_add parent >>= \box-> do
 
     entry <- elm_entry_add parent
     elm_entry_scrollable_set entry True
-    evas_object_size_hint_weight_set entry c'EVAS_HINT_EXPAND 0.0
+    evas_object_size_hint_weight_set entry c'EVAS_HINT_EXPAND c'EVAS_HINT_FILL
     evas_object_size_hint_align_set entry c'EVAS_HINT_FILL 0.5
     -- elm_object_text_set entry $ fromString ""
     elm_entry_single_line_set entry True
     elm_box_pack_end box entry
+    --evas_object_size_hint_min_set entry 200 80
+    --evas_object_resize entry 300 80
     evas_object_show entry
     elm_object_focus_set entry True
     
@@ -303,8 +306,12 @@ on_login mbox entry parent _ ptr _ = do
     login <- elm_object_text_get entry
     sendMBox mbox $! toMessage $! GuiLogin login parent
 
-showMessage:: String-> HEP ()
-showMessage str = do
-    liftIO $! S.putStrLn str
+showMessage:: String-> PEvas_Object -> HEP ()
+showMessage str parent = do
+    liftIO $! do
+        notify <- elm_notify_add parent
+        elm_notify_allow_events_set notify False
+        evas_object_size_hint_weight_set notify c'EVAS_HINT_EXPAND c'EVAS_HINT_EXPAND
+        --elm_notify_align_set notify 0.5 1.0
     return ()
     
