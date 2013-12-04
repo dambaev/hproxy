@@ -11,7 +11,7 @@ import HElementary.Elementary
 import HElementary.ElementaryFFI
 import Data.ByteString.UTF8 as U
 import Data.ByteString.Char8 as C8
-import System.IO
+import System.IO as S
 import Foreign.Ptr
 import Control.Monad
 import Control.Concurrent
@@ -23,6 +23,8 @@ import System.Console.GetOpt
 import Data.HProxy.Session
 import Data.HProxy.Rules
 import Text.ParserCombinators.Parsec
+import ProxyClient
+import Data.Maybe
 
 data GuiMessage = GuiExit
                 | GuiLogin ByteString (Ptr C'Evas_Object)
@@ -47,6 +49,8 @@ data MainOptions = MainOptions
     , optionPrePort:: String
     , optionPostPort:: String
     }
+    deriving Typeable
+instance HEPLocalState MainOptions
 
 defaultMainOptions = MainOptions
     { optionDestination = Nothing
@@ -116,10 +120,17 @@ main = withSocketsDo $! withElementary $! runHEPGlobal $!
         Nothing -> procRunning
         Just GuiExit -> procFinished
         Just (GuiLogin login parent ) -> do
+            Just ls <- localState 
             when debug $! liftIO $! C8.putStrLn $! login
             
-            liftIO $! evas_object_smart_callback_call parent (fromString "hproxy_done") nullPtr
-            procRunning
+            ret <- proxyLogin (unpack login) (fromJust $! optionServer ls) (fromJust $! optionDestination ls)
+            case ret of
+                Left !message -> do
+                    showMessage message
+                    procRunning
+                Right port -> do
+                    liftIO $! evas_object_smart_callback_call parent (fromString "delete,request") nullPtr
+                    procFinished
 
 generateOptions:: [MainFlag]-> MainOptions-> MainOptions
 generateOptions [] !tmp = tmp
@@ -176,6 +187,7 @@ reactOnOptions opts | P.length (optionClient opts) > 0
     error "error: you must specify client program OR client script"
     procFinished
 reactOnOptions opts = do
+    setLocalState $! Just $! opts
     mybox <- selfMBox
     worker <- spawn $! proc $! guiProc mybox
     procRunning
@@ -192,6 +204,8 @@ mainInit = do
 guiProc outbox = do
     liftIO $! do
         elm_win_util_standard_add (fromString "mainwnd") (fromString "hproxy") >>= \parent-> do
+            elm_win_focus_highlight_enabled_set parent True
+
             -- on close
             evas_object_smart_callback_add parent (fromString "delete,request") (on_done outbox ) nullPtr
             evas_object_smart_callback_add parent (fromString "hproxy_done") (on_done outbox ) nullPtr
@@ -271,6 +285,7 @@ addLogin parent outbox = elm_box_add parent >>= \box-> do
     elm_entry_single_line_set entry True
     elm_box_pack_end box entry
     evas_object_show entry
+    elm_object_focus_set entry True
     
     evas_object_show box
     return (box, entry)
@@ -288,3 +303,8 @@ on_login mbox entry parent _ ptr _ = do
     login <- elm_object_text_get entry
     sendMBox mbox $! toMessage $! GuiLogin login parent
 
+showMessage:: String-> HEP ()
+showMessage str = do
+    liftIO $! S.putStrLn str
+    return ()
+    
