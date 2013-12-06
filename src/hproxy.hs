@@ -24,7 +24,11 @@ import Data.HProxy.Session
 import Data.HProxy.Rules
 import Text.ParserCombinators.Parsec
 import ProxyClient
+import TCPServer
 import Data.Maybe
+import System.Process as S
+
+data TCPMessage = ClientConnected Handle
 
 data GuiMessage = GuiExit
                 | GuiLogin ByteString (Ptr C'Evas_Object)
@@ -61,6 +65,9 @@ defaultMainOptions = MainOptions
     , optionPostPort = ""
     , optionClientScript = ""
     }
+
+mainBasePort = PortNumber 10000
+connectionTimeout = 20000
 
 options :: [OptDescr MainFlag]
 options = 
@@ -115,13 +122,19 @@ debug = True
 main = withSocketsDo $! withElementary $! runHEPGlobal $! 
         procForker forkOS $!
         procWithBracket mainInit mainShutdown $! H.proc $! do
-    liftIO $! ecore_main_loop_iterate
-    mmsg <- receiveAfter 50
+    mmsg <- receiveMaybe
     case mmsg of
-        Nothing-> procRunning
+        Nothing-> do
+            liftIO $! do
+                ecore_main_loop_iterate
+                threadDelay 10000
+            procRunning
         Just msg -> case fromMessage msg of
             Nothing -> procRunning
-            Just GuiExit -> procFinished
+            Just GuiExit -> do
+                procs <- getProcs
+                liftIO $! print procs
+                procFinished
             Just (GuiLogin login parent ) -> do
                 Just ls <- localState 
                 when debug $! liftIO $! C8.putStrLn $! login
@@ -132,12 +145,52 @@ main = withSocketsDo $! withElementary $! runHEPGlobal $!
                         showMessage message parent
                         procRunning
                     Right port -> do
-                        liftIO $! evas_object_smart_callback_call parent (fromString "delete,request") nullPtr
-                        procFinished
+                        when debug $! liftIO $! S.putStrLn $! "logged in"
+                        Just ls <- localState
+                        spawn $! H.proc $! startClient port (unpack login) ls
+                        procRunning
 
 mainShutdown = do
     liftIO elm_exit
     procFinished
+
+
+startClient:: Int-> String-> MainOptions -> HEPProc
+startClient remoteport login opts = do
+    inbox <- liftIO $! newMBox
+    (srv,(PortNumber localport)) <- startTCPServerBasePort mainBasePort 
+        (\_ -> return ()) -- receive
+        (\h -> liftIO $! sendMBox inbox $! ClientConnected h)
+    startClientProg login "localhost" (fromIntegral localport) opts
+    mmsg  <- liftIO $! receiveMBoxAfter connectionTimeout inbox
+    case mmsg of 
+        Nothing-> do
+            liftIO $! S.putStrLn $! "noone connected"
+            stopTCPServer srv
+            procFinished
+        Just (ClientConnected !hlocal) -> do
+            when debug $! liftIO $! S.putStrLn $! "client connected"
+            let Just (DestinationAddrPort (IPAddress remotehost) _) = optionServer opts
+            (hremote, clientpid) <- startTCPClient remotehost (PortNumber $! fromIntegral remoteport) hlocal (\_-> return ())
+            setConsumer srv hremote
+            procFinished
+
+startClientProg:: String
+               -> String
+               -> PortT
+               -> MainOptions
+               -> HEP ()
+startClientProg login server port
+    (MainOptions{ optionClientScript = script}) | P.length script>0 = do
+        liftIO $! do
+            S.putStrLn $! "exec: " ++ script ++ " " ++ login ++ " " ++ server ++ " " ++ show port
+            createProcess $! ( S.proc script 
+                [ login
+                , server
+                , show port
+                ] )
+        return ()
+
 
 generateOptions:: [MainFlag]-> MainOptions-> MainOptions
 generateOptions [] !tmp = tmp
