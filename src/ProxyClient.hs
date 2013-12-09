@@ -17,11 +17,16 @@ data ProxyMessage = ProxyRead ByteString
 proxyLogin:: String -- login
           -> Destination -- server
           -> Destination -- destination
+          -> Int
           -> HEP (Either String PortT)
-proxyLogin login server dest@(DestinationAddrPort (IPAddress ip) port) = do
+proxyLogin login 
+           server 
+           dest@(DestinationAddrPort (IPAddress ip) port) 
+           connectionsCount = do
     inbox <- liftIO $! newMBox
-    ssh <- startSSHClient server login 
-            ("hproxyserver -d " ++ ip ++ ":" ++ show port)
+    ssh <- startSSHClient server login
+            ("hproxyserver -d " ++ ip ++ ":" ++ show port ++ " -c " ++ 
+                show connectionsCount )
         (\x->  liftIO $! sendMBox inbox $! ProxyRead x)
         (\x->  return () ) -- liftIO $! sendMBox inbox $! ProxyReadError x)
         (liftIO $! sendMBox inbox $! ProxyExit)

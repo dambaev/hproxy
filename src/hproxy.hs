@@ -42,6 +42,7 @@ data MainFlag = FlagDestination Destination
               | FlagPrePort String
               | FlagPostPort String
               | FlagClientScript String
+              | FlagConnectionsCount Int
     deriving Show
 
 data MainOptions = MainOptions
@@ -52,6 +53,7 @@ data MainOptions = MainOptions
     , optionPreSrv:: String
     , optionPrePort:: String
     , optionPostPort:: String
+    , optionConnectionsCount:: Int
     }
     deriving Typeable
 instance HEPLocalState MainOptions
@@ -64,6 +66,7 @@ defaultMainOptions = MainOptions
     , optionPrePort = ":" -- to be addr:port
     , optionPostPort = ""
     , optionClientScript = ""
+    , optionConnectionsCount = 1
     }
 
 mainBasePort = PortNumber 10000
@@ -78,6 +81,7 @@ options =
     , Option []     ["opt-pre-port"]  (ReqArg getPrePortFlag "\"some prefix\"") "command line prefix before server TCP Port"
     , Option []     ["opt-post-port"]  (ReqArg getPostPortFlag "\"some postfix\"") "command line postfix after server TCP Port"
     , Option []     ["client-script"]  (ReqArg getClientScriptFlag "\"script path\"") "script path, that receives $1 = connection IP, $2 = connection port"
+    , Option []     ["conn-count"]  (ReqArg getConnectionsCountFlag "connections' count") "how many connections can be made by client"
     ]
     
 getDestFlag:: String-> MainFlag
@@ -85,6 +89,10 @@ getDestFlag str = let parsed = parse parseAddrPort "arg" ("addr "++str)
     in case parsed of
         Right dest -> FlagDestination $! dest
         Left some -> error $! "option -d: " ++ show some
+
+getConnectionsCountFlag:: String-> MainFlag
+getConnectionsCountFlag str = 
+    FlagConnectionsCount $! read str
 
 
 getServerFlag:: String-> MainFlag
@@ -139,7 +147,7 @@ main = withSocketsDo $! withElementary $! runHEPGlobal $!
                 Just ls <- localState 
                 when debug $! liftIO $! C8.putStrLn $! login
                 
-                ret <- proxyLogin (unpack login) (fromJust $! optionServer ls) (fromJust $! optionDestination ls)
+                ret <- proxyLogin (unpack login) (fromJust $! optionServer ls) (fromJust $! optionDestination ls) (optionConnectionsCount ls)
                 case ret of
                     Left !message -> do
                         showMessage message parent
@@ -159,10 +167,21 @@ startClient:: Int-> String-> MainOptions -> HEPProc
 startClient remoteport login opts = do
     inbox <- liftIO $! newMBox
     (srv,(PortNumber localport)) <- startTCPServerBasePort mainBasePort 
+        (optionConnectionsCount opts)
         (\_ -> return ()) -- receive
-        (\h -> liftIO $! sendMBox inbox $! ClientConnected h)
+        onClientConnected
+        --(\h -> liftIO $! sendMBox inbox $! ClientConnected h)
     startClientProg login "localhost" (fromIntegral localport) opts
-    mmsg  <- liftIO $! receiveMBoxAfter connectionTimeout inbox
+    procFinished
+        where
+        onClientConnected:: Pid-> Handle -> HEP ()
+        onClientConnected srv hlocal = do
+            when debug $! liftIO $! S.putStrLn $! "client connected"
+            let Just (DestinationAddrPort (IPAddress remotehost) _) = optionServer opts
+            (hremote, clientpid) <- startTCPClient remotehost (PortNumber $! fromIntegral remoteport) hlocal (\_-> return ())
+            setConsumer srv hremote
+                
+    {- mmsg  <- liftIO $! receiveMBoxAfter connectionTimeout inbox
     case mmsg of 
         Nothing-> do
             liftIO $! S.putStrLn $! "noone connected"
@@ -174,7 +193,7 @@ startClient remoteport login opts = do
             (hremote, clientpid) <- startTCPClient remotehost (PortNumber $! fromIntegral remoteport) hlocal (\_-> return ())
             setConsumer srv hremote
             procFinished
-
+-}
 startClientProg:: String
                -> String
                -> PortT
@@ -228,6 +247,11 @@ generateOptions ((FlagPostPort str):ls) tmp = generateOptions ls newtmp
     where
     !newtmp = tmp
         { optionPostPort = str
+        }
+generateOptions ((FlagConnectionsCount cnt):ls) tmp = generateOptions ls newtmp
+    where
+    !newtmp = tmp
+        { optionConnectionsCount = cnt
         }
 
 reactOnOptions:: MainOptions -> HEPProc
