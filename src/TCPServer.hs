@@ -148,13 +148,17 @@ serverShutdown = do
         Just some -> do
             _ <- case (workerHandle some) of
                 Nothing -> return ()
-                Just wh -> liftIO $! hClose wh
+                Just wh -> liftIO $! do
+                    isclosed <- hIsClosed wh
+                    when isclosed $! hClose wh
             liftIO $! free (workerBuffer some)
             liftIO $! sClose $! workerSocket some
 
             _ <- case workerConsumer some of
                 Nothing-> return ()
-                Just h-> liftIO $! hClose h
+                Just h-> liftIO $! do
+                    isclosed <- hIsClosed h
+                    when isclosed $! hClose h
             procFinished
 
 
@@ -301,6 +305,12 @@ serverSupervisor receiveAction onOpen = do
                     }
                 procRunning
                 )
+        handleServiceMessage (Just (ProcShutdownFailure cpid e _ outbox)) = 
+            left =<< lift ( do
+                liftIO $! putStrLn $! show e
+                procFinish outbox
+                procRunning
+                )
 
         handleWorkerFeedback:: Maybe WorkerFeedback-> EitherT HEPProcState HEP HEPProcState
         handleWorkerFeedback Nothing = right =<< lift procRunning
@@ -385,7 +395,10 @@ clientShutdown = do
         Nothing-> procFinished
         Just some -> do
             liftIO $! do
-                hClose (clientHandle some)
+                isconsclosed <- hIsClosed (clientConsumer some)
+                when isconsclosed $! hClose (clientConsumer some)
+                ishclosed <- hIsClosed (clientHandle some)
+                when ishclosed $! hClose (clientHandle some)
                 free (clientBuffer some)
             procFinished
 
