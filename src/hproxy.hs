@@ -372,7 +372,7 @@ addLogin parent outbox = elm_box_add parent >>= \box-> do
     
 
 
-on_closeNew _ ptr _ = do
+on_closeNew ptr _ _ _ = do
     evas_object_del ptr
 
 on_done mbox _ _ _ = do
@@ -384,11 +384,35 @@ on_login mbox entry parent _ ptr _ = do
     sendMBox mbox $! toMessage $! GuiLogin login parent
 
 showMessage:: String-> PEvas_Object -> HEP ()
-showMessage str parent = do
+showMessage str _ = do
     liftIO $! do
-        notify <- elm_notify_add parent
-        elm_notify_allow_events_set notify False
-        evas_object_size_hint_weight_set notify c'EVAS_HINT_EXPAND c'EVAS_HINT_EXPAND
-        --elm_notify_align_set notify 0.5 1.0
+        parent <- elm_win_util_standard_add (fromString "messagebox") (fromString "") 
+        evas_object_smart_callback_add parent (fromString "delete,request") (on_closeNew parent) nullPtr
+        evas_object_resize parent 300 80
+        elm_win_focus_highlight_enabled_set parent True
+        
+        box <- elm_box_add parent
+        evas_object_size_hint_weight_set box c'EVAS_HINT_EXPAND c'EVAS_HINT_EXPAND
+        -- resize box to parent
+        elm_win_resize_object_add parent box
+
+        
+        
+        label <- elm_label_add parent
+        elm_object_text_set label $ fromString str
+        evas_object_size_hint_align_set label  0.5 0.5
+        evas_object_size_hint_weight_set label c'EVAS_HINT_EXPAND c'EVAS_HINT_EXPAND
+        elm_box_pack_end box label
+        evas_object_show label
+        
+        button <- elm_button_add parent
+        elm_object_text_set button $! fromString "Закрыть"
+        evas_object_smart_callback_add button (fromString "clicked") (on_closeNew parent) nullPtr
+        elm_box_pack_end box button
+        evas_object_show button
+        elm_object_focus_set button True
+        
+        evas_object_show box
+        evas_object_show parent
     return ()
     
