@@ -147,8 +147,6 @@ main = withSocketsDo $! withElementary $! runHEPGlobal $!
             case fromMessage msg of
                 Nothing -> procRunning
                 Just GuiExit -> do
-                    procs <- getProcs
-                    liftIO $! print procs
                     procFinished
                 Just (GuiLogin login parent ) -> do
                     when debug $! liftIO $! C8.putStrLn $! login
