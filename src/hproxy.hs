@@ -24,6 +24,7 @@ import Data.HProxy.Session
 import Data.HProxy.Rules
 import Text.ParserCombinators.Parsec
 import ProxyClient
+import SSHClient
 import TCPServer
 import Data.Maybe
 import System.Process as S
@@ -32,6 +33,8 @@ data TCPMessage = ClientConnected Handle
 
 data GuiMessage = GuiExit
                 | GuiLogin ByteString (Ptr C'Evas_Object)
+                | MainStoreTCPServer Pid
+                | MainClientReceived Int
     deriving Typeable
 instance Message GuiMessage
 
@@ -54,6 +57,7 @@ data MainOptions = MainOptions
     , optionPrePort:: String
     , optionPostPort:: String
     , optionConnectionsCount:: Int
+    , optionTCPServer:: Maybe Pid
     }
     deriving Typeable
 instance HEPLocalState MainOptions
@@ -67,6 +71,7 @@ defaultMainOptions = MainOptions
     , optionPostPort = ""
     , optionClientScript = ""
     , optionConnectionsCount = 1
+    , optionTCPServer = Nothing
     }
 
 mainBasePort = PortNumber 10000
@@ -137,49 +142,100 @@ main = withSocketsDo $! withElementary $! runHEPGlobal $!
                 ecore_main_loop_iterate
                 threadDelay 10000
             procRunning
-        Just msg -> case fromMessage msg of
-            Nothing -> procRunning
-            Just GuiExit -> do
-                procs <- getProcs
-                liftIO $! print procs
-                procFinished
-            Just (GuiLogin login parent ) -> do
-                Just ls <- localState 
-                when debug $! liftIO $! C8.putStrLn $! login
+        Just msg -> do
+            Just ls <- localState 
+            case fromMessage msg of
+                Nothing -> procRunning
+                Just GuiExit -> do
+                    procs <- getProcs
+                    liftIO $! print procs
+                    procFinished
+                Just (GuiLogin login parent ) -> do
+                    when debug $! liftIO $! C8.putStrLn $! login
+                    
+                    ret <- proxyLogin (unpack login) (fromJust $! optionServer ls) (fromJust $! optionDestination ls) (optionConnectionsCount ls)
+                    case ret of
+                        Left !message -> do
+                            showMessage message parent
+                            procRunning
+                        Right (port,ssh) -> do
+                            when debug $! liftIO $! S.putStrLn $! "logged in"
+                            spawn $! H.proc $! startClient port ssh (unpack login) ls
+                            procRunning
                 
-                ret <- proxyLogin (unpack login) (fromJust $! optionServer ls) (fromJust $! optionDestination ls) (optionConnectionsCount ls)
-                case ret of
-                    Left !message -> do
-                        showMessage message parent
-                        procRunning
-                    Right port -> do
-                        when debug $! liftIO $! S.putStrLn $! "logged in"
-                        Just ls <- localState
-                        spawn $! H.proc $! startClient port (unpack login) ls
-                        procRunning
 
 mainShutdown = do
     liftIO elm_exit
     procFinished
 
+data TimeoutMessage = TimeouterStop
+                    | TimeouterUpdate
+                    | TimeouterStoreTCPServer Pid Pid
+    deriving Typeable
+instance Message TimeoutMessage
 
-startClient:: Int-> String-> MainOptions -> HEPProc
-startClient remoteport login opts = do
+data TimeouterState = TimeouterState
+    { timeouterServer:: Pid
+    , timeouterSSHClient:: Pid
+    }
+    deriving Typeable
+instance HEPLocalState TimeouterState
+
+
+serverTimeouter:: MainOptions-> HEPProc
+serverTimeouter opts = do
+    mmsg <- receiveAfter 60000
+    mls <- localState
+    case mmsg of
+        Nothing-> do
+            case mls of
+                Nothing-> do
+                    liftIO $! S.putStrLn $! "timeouter: exit by timeout without any server activity"
+                    procFinished
+                Just ls-> do
+                    liftIO $! S.putStrLn $! "timeouter: exit by timeout"
+                    stopTCPServer (timeouterServer ls)
+                    stopSSHClient (timeouterSSHClient ls)
+                    procFinished
+        Just msg -> case fromMessage msg of
+            Just (TimeouterStoreTCPServer srv ssh) -> do
+                liftIO $! S.putStrLn $! "timeouter: store server pid"
+                setLocalState $! Just $! TimeouterState
+                    { timeouterServer = srv
+                    , timeouterSSHClient = ssh
+                    }
+                procRunning
+            Just TimeouterUpdate -> procRunning
+            Just TimeouterStop -> do
+                liftIO $! S.putStrLn $! "timeouter: exit due server's shutdown"
+                procFinished
+
+
+
+startClient:: Int-> Pid-> String-> MainOptions -> HEPProc
+startClient remoteport ssh login opts = do
     inbox <- liftIO $! newMBox
+    timeouter <- spawn $! procWithBracket 
+        (liftIO ( S.putStrLn "timeouter: start") >> procRunning)
+        (liftIO ( S.putStrLn "timeouter: stop") >> procFinished)
+        $! H.proc $! serverTimeouter opts
+    let onClientConnected:: Pid-> Handle -> HEP ()
+        onClientConnected srv hlocal = do
+            when debug $! liftIO $! S.putStrLn $! "client connected"
+            let Just (DestinationAddrPort (IPAddress remotehost) _) = optionServer opts
+            (hremote, clientpid) <- startTCPClient remotehost (PortNumber $! fromIntegral remoteport) hlocal (\_-> send timeouter $! TimeouterUpdate)
+            setConsumer srv hremote
     (srv,(PortNumber localport)) <- startTCPServerBasePort mainBasePort 
         (optionConnectionsCount opts)
         (\_ -> return ()) -- receive
         onClientConnected
+        (send timeouter TimeouterStop)
         --(\h -> liftIO $! sendMBox inbox $! ClientConnected h)
+    send timeouter $! TimeouterStoreTCPServer srv ssh
     startClientProg login "localhost" (fromIntegral localport) opts
     procFinished
-        where
-        onClientConnected:: Pid-> Handle -> HEP ()
-        onClientConnected srv hlocal = do
-            when debug $! liftIO $! S.putStrLn $! "client connected"
-            let Just (DestinationAddrPort (IPAddress remotehost) _) = optionServer opts
-            (hremote, clientpid) <- startTCPClient remotehost (PortNumber $! fromIntegral remoteport) hlocal (\_-> return ())
-            setConsumer srv hremote
+
+        
                 
     {- mmsg  <- liftIO $! receiveMBoxAfter connectionTimeout inbox
     case mmsg of 

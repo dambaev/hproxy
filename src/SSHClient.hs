@@ -17,6 +17,7 @@ import Control.Monad.Trans
 import Control.Monad.Trans.Either
 import System.Exit
 import Data.HProxy.Rules
+import System.Timeout
 
 sshclient = "setsid"
 
@@ -105,6 +106,7 @@ progSupInit cmd args outbox onRead onError = do
     worker <- spawn $! procWithSubscriber me $! 
         procWithBracket (progInit me cmd args) (progShutdown) $!
         H.proc $! progWorker
+    addSubscribe worker
     mmsg <- receiveAfter 10000
     case mmsg of
         Nothing-> procFinished
@@ -153,7 +155,7 @@ progWorker = do
                 Nothing-> procRunning
                 Just WorkerStop-> do
                     liftIO $! terminateProcess $! progHandle ls
-                    procFinished
+                    procRunning
         Nothing-> do
             mexit <- liftIO $! getProcessExitCode $! progHandle ls
             case mexit of
@@ -166,9 +168,11 @@ progShutdown:: HEPProc
 progShutdown = do
     Just ls <- localState
     liftIO $! do
+        Sys.putStrLn $! "shutting down ssh client"
         hClose $! progHErr ls
         hClose $! progHIn ls
         hClose $! progHOut ls
+        terminateProcess $! progHandle ls
     procFinished
     
 progSupShutdown = procFinished
@@ -194,13 +198,15 @@ readerWorker:: Handle
 readerWorker h onRead = do
     Just ls <- localState 
     let  ptr = readerBuffer ls
-    !read <- liftIO $! hGetBufSome h ptr bufferSize
-    case read of
-        0 -> procFinished
-        _ -> do
-            str <- liftIO $! packCStringLen ( ptr, read)
-            onRead str
-            procRunning
+    !mread <- liftIO $! timeout 1000000 $! hGetBufSome h ptr bufferSize
+    case mread of
+        Nothing-> procRunning
+        Just read -> case read of
+            0 -> procFinished
+            _ -> do
+                str <- liftIO $! packCStringLen ( ptr, read)
+                onRead str
+                procRunning
 
 
 supervisorWorker:: HEPProc
@@ -234,8 +240,9 @@ supervisorWorker = do
         handleSupervisorCommand Nothing = right =<< lift procRunning
         handleSupervisorCommand (Just SupervisorStop) = do
             left =<< lift (do
+                liftIO $! Sys.putStrLn $! "stopping ssh client"
                 subscribed <- getSubscribed
-                forM subscribed $! \pid -> killProc pid
+                forM subscribed $! \pid -> send pid $! WorkerStop
                 procRunning
                 )
         handleSupervisorCommand (Just (SupervisorWrite str)) = do
@@ -257,3 +264,9 @@ writeInput:: Pid-> String-> HEP ()
 writeInput pid str = do
     send pid $! SupervisorWrite str
     return ()
+
+
+stopSSHClient:: Pid-> HEP ()
+stopSSHClient pid = do
+    send pid $! SupervisorStop
+

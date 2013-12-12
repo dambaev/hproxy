@@ -83,11 +83,16 @@ startTCPServerBasePort:: PortID
                       -> Int
                       -> (Int-> HEP ()) 
                       -> (Pid-> Handle-> HEP ()) 
+                      -> HEP ()
                       -> HEP (Pid, PortID)
-startTCPServerBasePort base connectionsCount receiveAction onOpen = do
+startTCPServerBasePort base 
+                       connectionsCount 
+                       receiveAction
+                       onOpen
+                       onClose = do
     !input <- liftIO newMBox
     sv <- spawn $! procWithBracket (serverSupInit base connectionsCount input receiveAction onOpen) 
-        serverSupShutdown $! proc $! serverSupervisor receiveAction onOpen 
+        (serverSupShutdown >> onClose >> procFinished) $! proc $! serverSupervisor receiveAction onOpen 
     ServerStarted !port <- liftIO $! receiveMBox input
     return (sv, port)
 
