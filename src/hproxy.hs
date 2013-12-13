@@ -169,6 +169,7 @@ mainShutdown = do
 data TimeoutMessage = TimeouterStop
                     | TimeouterUpdate
                     | TimeouterStoreTCPServer Pid Pid
+                    | TimeouterClientInitFailed
     deriving Typeable
 instance Message TimeoutMessage
 
@@ -207,6 +208,9 @@ serverTimeouter opts = do
             Just TimeouterStop -> do
                 liftIO $! S.putStrLn $! "timeouter: exit due server's shutdown"
                 procFinished
+            Just TimeouterClientInitFailed -> do
+                liftIO $! S.putStrLn $! "timeouter: exit due server's shutdown"
+                procFinished
 
 
 
@@ -221,7 +225,12 @@ startClient remoteport ssh login opts = do
         onClientConnected srv hlocal = do
             when debug $! liftIO $! S.putStrLn $! "client connected"
             let Just (DestinationAddrPort (IPAddress remotehost) _) = optionServer opts
-            (hremote, clientpid) <- startTCPClient remotehost (PortNumber $! fromIntegral remoteport) hlocal (\_-> send timeouter $! TimeouterUpdate)
+            (hremote, clientpid) <- startTCPClient 
+                remotehost 
+                (PortNumber $! fromIntegral remoteport) 
+                hlocal 
+                (\_-> send timeouter $! TimeouterUpdate)
+                (send timeouter $! TimeouterClientInitFailed)
             setConsumer srv hremote
     (srv,(PortNumber localport)) <- startTCPServerBasePort mainBasePort 
         (optionConnectionsCount opts)

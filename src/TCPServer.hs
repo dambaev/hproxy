@@ -357,11 +357,12 @@ startTCPClient:: String
               -> PortID
               -> Handle
               -> (Int-> HEP ())
+              -> HEP ()
               -> HEP (Handle, Pid)
-startTCPClient addr port hserver receiveAction = do
+startTCPClient addr port hserver receiveAction onInitFailed = do
     !inbox <- liftIO newMBox
     sv <- spawn $! procWithBracket (clientSupInit addr port inbox hserver receiveAction) procFinished $!
-        proc $! clientSupervisor
+        proc $! clientSupervisor onInitFailed 
     ClientStarted !h <- liftIO $! receiveMBox inbox
     return (h,sv)
 
@@ -400,11 +401,11 @@ clientShutdown = do
         Nothing-> procFinished
         Just some -> do
             liftIO $! do
+                free (clientBuffer some)
                 isconsclosed <- hIsClosed (clientConsumer some)
                 when isconsclosed $! hClose (clientConsumer some)
                 ishclosed <- hIsClosed (clientHandle some)
                 when ishclosed $! hClose (clientHandle some)
-                free (clientBuffer some)
             procFinished
 
 clientWorker:: (Int-> HEP ()) -> HEPProc
@@ -435,8 +436,8 @@ stopTCPClient:: Pid-> HEP ()
 stopTCPClient pid = do
     H.send pid $! StopClient
 
-clientSupervisor:: HEPProc
-clientSupervisor = do
+clientSupervisor:: HEP() -> HEPProc
+clientSupervisor onInitFailed = do
     msg <- receive
     let handleChildLinkMessage:: Maybe LinkedMessage -> EitherT HEPProcState HEP HEPProcState
         handleChildLinkMessage Nothing = lift procRunning >>= right
@@ -472,6 +473,7 @@ clientSupervisor = do
                 liftIO $! putStrLn  $! "supervisor: client init " ++ show cpid ++ 
                     " failed with: " ++ show e
                 procFinish outbox
+                onInitFailed 
                 procRunning
                 )
         handleClientSupervisorCommand:: Maybe ClientSupervisorCommand
