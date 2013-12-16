@@ -1,0 +1,10 @@
+Maintainer: Dambaev Alexander <theice@inbox.ru>
+Priority: optional
+Section: network
+Package: hproxy
+Version: 1.0.0
+Architecture: i386
+Depends: ssh-askpass-gnome
+         , openssh-client
+         , libelementary1
+Description: No description available.
