@@ -7,8 +7,6 @@ import Prelude as P
 import Control.Concurrent.HEP as H
 --import ProxyClient
 import Network
-import HElementary.Elementary
-import HElementary.ElementaryFFI
 import Data.ByteString.UTF8 as U
 import Data.ByteString.Char8 as C8
 import System.IO as S
@@ -31,9 +29,7 @@ import System.Process as S
 
 data TCPMessage = ClientConnected Handle
 
-data GuiMessage = GuiExit
-                | GuiLogin ByteString (Ptr C'Evas_Object)
-                | MainStoreTCPServer Pid
+data GuiMessage = MainStoreTCPServer Pid
                 | MainClientReceived Int
     deriving Typeable
 instance Message GuiMessage
@@ -46,6 +42,7 @@ data MainFlag = FlagDestination Destination
               | FlagPostPort String
               | FlagClientScript String
               | FlagConnectionsCount Int
+              | FlagUsername String
     deriving Show
 
 data MainOptions = MainOptions
@@ -58,6 +55,7 @@ data MainOptions = MainOptions
     , optionPostPort:: String
     , optionConnectionsCount:: Int
     , optionTCPServer:: Maybe Pid
+    , optionUsername:: String
     }
     deriving Typeable
 instance HEPLocalState MainOptions
@@ -72,6 +70,7 @@ defaultMainOptions = MainOptions
     , optionClientScript = ""
     , optionConnectionsCount = 1
     , optionTCPServer = Nothing
+    , optionUsername = ""
     }
 
 mainBasePort = PortNumber 10000
@@ -81,12 +80,13 @@ options :: [OptDescr MainFlag]
 options = 
     [ Option ['d']     ["dest"]  (ReqArg getDestFlag "addr:port") "destination"
     , Option ['s']     ["server"]  (ReqArg getServerFlag "addr:port") "proxy server"
-    , Option ['c']     ["client"]  (ReqArg getClientFlag "<program name>") "name of client program to run"
-    , Option []     ["opt-pre-srv"]  (ReqArg getPreSrvFlag "\"some prefix\"") "command line prefix before server IP"
-    , Option []     ["opt-pre-port"]  (ReqArg getPrePortFlag "\"some prefix\"") "command line prefix before server TCP Port"
-    , Option []     ["opt-post-port"]  (ReqArg getPostPortFlag "\"some postfix\"") "command line postfix after server TCP Port"
+--    , Option ['c']     ["client"]  (ReqArg getClientFlag "<program name>") "name of client program to run"
+--    , Option []     ["opt-pre-srv"]  (ReqArg getPreSrvFlag "\"some prefix\"") "command line prefix before server IP"
+--    , Option []     ["opt-pre-port"]  (ReqArg getPrePortFlag "\"some prefix\"") "command line prefix before server TCP Port"
+--    , Option []     ["opt-post-port"]  (ReqArg getPostPortFlag "\"some postfix\"") "command line postfix after server TCP Port"
     , Option []     ["client-script"]  (ReqArg getClientScriptFlag "\"script path\"") "script path, that receives $1 = connection IP, $2 = connection port"
     , Option []     ["conn-count"]  (ReqArg getConnectionsCountFlag "connections' count") "how many connections can be made by client"
+    , Option ['u']     ["user"]  (ReqArg getUserNameFlag "domain user name") "user login in remote domain"
     ]
     
 getDestFlag:: String-> MainFlag
@@ -94,6 +94,9 @@ getDestFlag str = let parsed = parse parseAddrPort "arg" ("addr "++str)
     in case parsed of
         Right dest -> FlagDestination $! dest
         Left some -> error $! "option -d: " ++ show some
+
+getUserNameFlag:: String-> MainFlag
+getUserNameFlag str = FlagUsername $! str
 
 getConnectionsCountFlag:: String-> MainFlag
 getConnectionsCountFlag str = 
@@ -127,15 +130,16 @@ getHProxyOptions argv =
         ([],_,_) -> ioError (userError (usageInfo header options))
         (!o,n,[]  ) -> return o
         (_,_,errs) -> ioError (userError (P.concat errs ++ usageInfo header options))
-    where header = "Usage: hproxy -s ip:port -d ip:port --client-script myscript.sh | hproxy -s ip:port -d ip:port --client ssh --opt-pre-srv=user@ --opt-pre-port=\"-p\""
+    where header = "Usage: hproxy -s ip:port -d ip:port -u john --client-script remmina.sh" -- | hproxy -s ip:port -d ip:port -u --client ssh --opt-pre-srv=user@ --opt-pre-port=\"-p\""
 
 
 debug = True
 
-main = withSocketsDo $! withElementary $! runHEPGlobal $! 
+main = withSocketsDo $! runHEPGlobal $! 
         procForker forkOS $!
         procWithBracket mainInit mainShutdown $! H.proc $! do
-    mmsg <- receiveMaybe
+
+{-    mmsg <- receiveMaybe
     case mmsg of
         Nothing-> do
             liftIO $! do
@@ -160,10 +164,10 @@ main = withSocketsDo $! withElementary $! runHEPGlobal $!
                             when debug $! liftIO $! S.putStrLn $! "logged in"
                             spawn $! H.proc $! startClient port ssh (unpack login) ls
                             procRunning
-                
+-}
+            procFinished
 
 mainShutdown = do
-    liftIO elm_exit
     procFinished
 
 data TimeoutMessage = TimeouterStop
@@ -316,6 +320,11 @@ generateOptions ((FlagConnectionsCount cnt):ls) tmp = generateOptions ls newtmp
     !newtmp = tmp
         { optionConnectionsCount = cnt
         }
+generateOptions ((FlagUsername uname):ls) tmp = generateOptions ls newtmp
+    where
+    !newtmp = tmp
+        { optionUsername = uname
+        }
 
 reactOnOptions:: MainOptions -> HEPProc
 reactOnOptions opts@(MainOptions{ optionServer = Nothing}) = do
@@ -336,7 +345,8 @@ reactOnOptions opts | P.length (optionClient opts) > 0
 reactOnOptions opts = do
     setLocalState $! Just $! opts
     mybox <- selfMBox
-    liftIO $! do
+    
+{-    liftIO $! do
         elm_win_util_standard_add (fromString "mainwnd") (fromString "hproxy") >>= \parent-> do
             elm_win_focus_highlight_enabled_set parent True
 
@@ -358,8 +368,16 @@ reactOnOptions opts = do
             buttonsBox <- addButtons parent mybox login
             elm_box_pack_end box buttonsBox
 
-            evas_object_show parent
-    procRunning
+            evas_object_show parent -}
+    ret <- proxyLogin (optionUsername opts) (fromJust $! optionServer opts) (fromJust $! optionDestination opts) (optionConnectionsCount opts)
+    case ret of
+        Left !message -> do
+            liftIO $! showMessage message
+            procRunning
+        Right (port,ssh) -> do
+            when debug $! liftIO $! S.putStrLn $! "logged in"
+            spawn $! H.proc $! startClient port ssh (optionUsername opts) opts
+            procRunning
 
 mainInit = do
     
@@ -371,7 +389,7 @@ mainInit = do
 
 
 
-nullCallback:: EvasObjectSmartCallback
+{- nullCallback:: EvasObjectSmartCallback
 nullCallback _ _ _ = return ()
 
 addButtons:: Ptr C'Evas_Object
@@ -479,3 +497,10 @@ showMessage str _ = do
         evas_object_show parent
     return ()
     
+-}
+
+
+showMessage:: String-> IO ()
+showMessage str = do
+    createProcess $! shell $! "zenity --error --text=\"" ++ str ++ "\""
+    return ()

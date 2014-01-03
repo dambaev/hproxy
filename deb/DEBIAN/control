@@ -2,9 +2,9 @@ Maintainer: Dambaev Alexander <theice@inbox.ru>
 Priority: optional
 Section: network
 Package: hproxy
-Version: 1.0.0
+Version: 1.2.1
 Architecture: i386
 Depends: ssh-askpass-gnome
          , openssh-client
-         , libelementary1
+         , zenity
 Description: No description available.

@@ -19,4 +19,4 @@ executable hproxy
   ghc-options:         -O -rtsopts -fforce-recomp -threaded
   main-is:             hproxy.hs
   -- other-modules:       
-  build-depends:       base, hep, mtl, either, network, helement, bytestring, utf8-string, hproxyrules, parsec, process
+  build-depends:       base, hep, mtl, either, network, bytestring, utf8-string, hproxyrules, parsec, process
