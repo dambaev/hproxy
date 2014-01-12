@@ -187,7 +187,7 @@ instance HEPLocalState TimeouterState
 
 serverTimeouter:: MainOptions-> HEPProc
 serverTimeouter opts = do
-    mmsg <- receiveAfter 60000
+    mmsg <- receiveAfter 1200000
     mls <- localState
     case mmsg of
         Nothing-> do
